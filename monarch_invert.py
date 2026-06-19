@@ -27,13 +27,20 @@ DEFAULT_LOOKBACK_DAYS = 90
 COOKIE_FILE = "cookies.txt"
 
 
+def valid_date(s: str) -> date:
+    try:
+        return date.fromisoformat(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"Invalid date '{s}'. Expected format: YYYY-MM-DD")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--start", metavar="YYYY-MM-DD", help="Start date (default: 90 days ago)")
-    parser.add_argument("--end", metavar="YYYY-MM-DD", help="End date (default: today)")
-    parser.add_argument("--date", metavar="YYYY-MM-DD", help="Shorthand for --start and --end on the same day")
+    parser.add_argument("--start", metavar="YYYY-MM-DD", type=valid_date, help="Start date (default: 90 days ago)")
+    parser.add_argument("--end", metavar="YYYY-MM-DD", type=valid_date, help="End date (default: today)")
+    parser.add_argument("--date", metavar="YYYY-MM-DD", type=valid_date, help="Shorthand for --start and --end on the same day")
     parser.add_argument("--days", metavar="N", type=int, help=f"Look back N days from today (default: {DEFAULT_LOOKBACK_DAYS})")
     parser.add_argument(
         "--account-name",
@@ -215,8 +222,8 @@ async def main() -> None:
     args = parse_args()
 
     today = date.today()
-    start_date = args.start or args.date or (today - timedelta(days=args.days or DEFAULT_LOOKBACK_DAYS)).isoformat()
-    end_date = args.end or args.date or today.isoformat()
+    start_date = (args.start or args.date or today - timedelta(days=args.days or DEFAULT_LOOKBACK_DAYS)).isoformat()
+    end_date = (args.end or args.date or today).isoformat()
 
     mm = MonarchMoney()
     await do_login(mm, args.save_credentials)
