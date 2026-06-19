@@ -310,10 +310,7 @@ async def main() -> None:
             print(f"  ✓ Fixed: {t['date']}  {merchant}  ({format_amount(t['amount'])} -> {format_amount(new_amount)})")
             ok += 1
         except Exception as e:
-            err = str(e)
-            # Truncate long error strings that may contain sensitive API response data.
-            display_err = err[:120] + "…" if len(err) > 120 else err
-            print(f"  ✗ Failed: {t['date']}  {merchant}  — {display_err}")
+            print(f"  ✗ Failed: {t['date']}  {merchant}  — {e}")
 
     print(f"\nDone. {ok}/{len(selected)} transaction(s) updated.")
 
