@@ -139,7 +139,15 @@ async def do_login(mm: MonarchMoney, save_credentials: bool) -> None:
             pass
 
     if os.path.exists(COOKIE_FILE):
-        cookie_string = open(COOKIE_FILE).read().strip()
+        mode = os.stat(COOKIE_FILE).st_mode & 0o777
+        if mode & 0o077:
+            print(
+                f"\n  Error: {COOKIE_FILE} is readable by group or others (permissions: {oct(mode)}).\n"
+                f"  Run: chmod 600 {COOKIE_FILE}\n"
+            )
+            sys.exit(1)
+        with open(COOKIE_FILE) as f:
+            cookie_string = f.read().strip()
         if cookie_string.lower().startswith("cookie:"):
             cookie_string = cookie_string[7:].strip()
         print(f"Found {COOKIE_FILE}, authenticating with browser cookies...")
