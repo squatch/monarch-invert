@@ -139,7 +139,15 @@ async def do_login(mm: MonarchMoney, save_credentials: bool) -> None:
             pass
 
     if os.path.exists(COOKIE_FILE):
-        cookie_string = open(COOKIE_FILE).read().strip()
+        mode = os.stat(COOKIE_FILE).st_mode & 0o777
+        if mode & 0o077:
+            print(
+                f"\n  Error: {COOKIE_FILE} is readable by group or others (permissions: {oct(mode)}).\n"
+                f"  Run: chmod 600 {COOKIE_FILE}\n"
+            )
+            sys.exit(1)
+        with open(COOKIE_FILE) as f:
+            cookie_string = f.read().strip()
         if cookie_string.lower().startswith("cookie:"):
             cookie_string = cookie_string[7:].strip()
         print(f"Found {COOKIE_FILE}, authenticating with browser cookies...")
@@ -302,7 +310,10 @@ async def main() -> None:
             print(f"  ✓ Fixed: {t['date']}  {merchant}  ({format_amount(t['amount'])} -> {format_amount(new_amount)})")
             ok += 1
         except Exception as e:
-            print(f"  ✗ Failed: {t['date']}  {merchant}  — {e}")
+            err = str(e)
+            # Truncate long error strings that may contain sensitive API response data.
+            display_err = err[:120] + "…" if len(err) > 120 else err
+            print(f"  ✗ Failed: {t['date']}  {merchant}  — {display_err}")
 
     print(f"\nDone. {ok}/{len(selected)} transaction(s) updated.")
 
