@@ -10,6 +10,11 @@ transaction in your account.
 Usage:
     python monarch_invert.py [options]
 
+By default the script selects transactions tagged "Is Inverted" (--use-tags
+mode). Pass date-range or filter flags (--start, --end, --date, --days,
+--positive, --negative, --all, or --account-name) to browse by date range
+instead.
+
 """
 
 import asyncio
@@ -58,7 +63,9 @@ def parse_args():
         "--use-tags",
         action="store_true",
         help=(
-            f'Select transactions tagged "{TAG_IS_INVERTED}" instead of browsing by date range. '
+            f'Select transactions tagged "{TAG_IS_INVERTED}" instead of browsing by date range '
+            "(default when no date-range or filter flags are given; overridden by "
+            "--start, --end, --date, --days, --positive, --negative, --all, or --account-name). "
             "You will still be asked to confirm before any changes are made."
         ),
     )
@@ -381,7 +388,14 @@ async def main() -> None:
         no_create_tags=args.no_create_tags,
     )
 
-    if args.use_tags:
+    date_range_mode = bool(
+        args.start or args.end or args.date or args.days
+        or args.positive or args.negative or args.all
+        or args.account_name
+    )
+    use_tags = args.use_tags or not date_range_mode
+
+    if use_tags:
         # Resolve the "Is Inverted" tag; it must already exist to filter by it
         print(f'Looking for transactions tagged "{TAG_IS_INVERTED}"...')
         if not is_inverted_tag_id:
