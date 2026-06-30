@@ -25,6 +25,9 @@ from monarchmoney.monarchmoney import CaptchaRequiredException, RequireMFAExcept
 
 DEFAULT_LOOKBACK_DAYS = 90
 COOKIE_FILE = "cookies.txt"
+TAG_IS_INVERTED = "Is Inverted"
+TAG_WAS_INVERTED = "Was Inverted"
+TAG_COLOR_DEFAULT = "#808080"
 
 
 def valid_date(s: str) -> date:
@@ -47,6 +50,14 @@ def parse_args():
         metavar="NAME",
         default="",
         help="Case-insensitive substring to filter by account name. Omit to show all accounts.",
+    )
+    parser.add_argument(
+        "--use-tags",
+        action="store_true",
+        help=(
+            f'Select transactions tagged "{TAG_IS_INVERTED}" instead of browsing by date range. '
+            "You will still be asked to confirm before any changes are made."
+        ),
     )
     filter_group = parser.add_mutually_exclusive_group()
     filter_group.add_argument(
@@ -177,6 +188,44 @@ async def get_accounts(mm: MonarchMoney, name_substring: str) -> list[dict]:
     return accounts
 
 
+async def get_or_create_tag(mm: MonarchMoney, name: str, tags_cache: dict[str, dict]) -> dict:
+    """Return the tag dict for *name*, creating it (gray) if it doesn't exist.
+
+    *tags_cache* is a mapping of lowercase tag name -> tag dict and is updated
+    in-place so repeat calls don't hit the network.
+    """
+    key = name.lower()
+    if key not in tags_cache:
+        data = await mm.get_transaction_tags()
+        for t in data.get("householdTransactionTags", []):
+            tags_cache[t["name"].lower()] = t
+    if key not in tags_cache:
+        result = await mm.create_transaction_tag(name=name, color=TAG_COLOR_DEFAULT)
+        new_tag = result.get("createTransactionTag", {}).get("tag", {})
+        tags_cache[new_tag["name"].lower()] = new_tag
+    return tags_cache[key]
+
+
+async def update_tags_after_invert(
+    mm: MonarchMoney,
+    transaction: dict,
+    tags_cache: dict[str, dict],
+) -> None:
+    """Remove the 'Is Inverted' tag and add the 'Was Inverted' tag."""
+    current_tag_ids: set[str] = {tg["id"] for tg in (transaction.get("tags") or [])}
+
+    # Resolve both tags (creating Was Inverted if needed)
+    is_inverted_tag = await get_or_create_tag(mm, TAG_IS_INVERTED, tags_cache)
+    was_inverted_tag = await get_or_create_tag(mm, TAG_WAS_INVERTED, tags_cache)
+
+    new_tag_ids = (current_tag_ids - {is_inverted_tag["id"]}) | {was_inverted_tag["id"]}
+    if new_tag_ids != current_tag_ids:
+        await mm.set_transaction_tags(
+            transaction_id=transaction["id"],
+            tag_ids=list(new_tag_ids),
+        )
+
+
 def format_amount(amount: float) -> str:
     sign = "+" if amount > 0 else ""
     return f"{sign}{amount:,.2f}"
@@ -227,6 +276,68 @@ async def main() -> None:
 
     mm = MonarchMoney()
     await do_login(mm, args.save_credentials)
+
+    tags_cache: dict[str, dict] = {}
+
+    if args.use_tags:
+        # Resolve the "Is Inverted" tag; it must already exist to filter by it
+        print(f'Looking for transactions tagged "{TAG_IS_INVERTED}"...')
+        data = await mm.get_transaction_tags()
+        for t in data.get("householdTransactionTags", []):
+            tags_cache[t["name"].lower()] = t
+
+        is_inverted_tag = tags_cache.get(TAG_IS_INVERTED.lower())
+        if not is_inverted_tag:
+            print(f'No "{TAG_IS_INVERTED}" tag found in your account. Nothing to do.')
+            sys.exit(0)
+
+        txn_data = await mm.get_transactions(
+            tag_ids=[is_inverted_tag["id"]],
+            limit=500,
+        )
+        candidates = txn_data.get("allTransactions", {}).get("results", [])
+
+        if not candidates:
+            print(f'No transactions tagged "{TAG_IS_INVERTED}" found.')
+            sys.exit(0)
+
+        print(f'Found {len(candidates)} transaction(s) tagged "{TAG_IS_INVERTED}":\n')
+        for i, t in enumerate(candidates):
+            print_transaction(i, t)
+
+        print()
+        dry_run_prefix = "[DRY RUN] " if args.dry_run else ""
+        print(f"{dry_run_prefix}About to flip {len(candidates)} transaction(s):")
+        for t in candidates:
+            merchant = (t.get("merchant") or {}).get("name") or t.get("plaidName") or "(unknown)"
+            print(f"  {t['date']}  {format_amount(t['amount']):>12}  ->  {format_amount(-t['amount']):>12}  {merchant}")
+
+        if args.dry_run:
+            print("\nDry run — no changes made.")
+            sys.exit(0)
+
+        confirm = input("\nConfirm? [Y/n] ").strip().lower()
+        if confirm == "n":
+            print("Aborted.")
+            sys.exit(0)
+
+        print()
+        ok = 0
+        for t in candidates:
+            new_amount = -t["amount"]
+            merchant = (t.get("merchant") or {}).get("name") or t.get("plaidName") or "(unknown)"
+            try:
+                await mm.update_transaction(transaction_id=t["id"], amount=new_amount)
+                await update_tags_after_invert(mm, t, tags_cache)
+                print(f"  ✓ Fixed: {t['date']}  {merchant}  ({format_amount(t['amount'])} -> {format_amount(new_amount)})")
+                ok += 1
+            except Exception as e:
+                print(f"  ✗ Failed: {t['date']}  {merchant}  — {e}")
+
+        print(f"\nDone. {ok}/{len(candidates)} transaction(s) updated.")
+        return
+
+    # --- Standard date-range / sign-filter selection ---
 
     # Find accounts
     filter_desc = f" matching '{args.account_name}'" if args.account_name else ""
@@ -314,6 +425,7 @@ async def main() -> None:
         merchant = (t.get("merchant") or {}).get("name") or t.get("plaidName") or "(unknown)"
         try:
             await mm.update_transaction(transaction_id=t["id"], amount=new_amount)
+            await update_tags_after_invert(mm, t, tags_cache)
             print(f"  ✓ Fixed: {t['date']}  {merchant}  ({format_amount(t['amount'])} -> {format_amount(new_amount)})")
             ok += 1
         except Exception as e:
