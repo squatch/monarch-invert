@@ -28,12 +28,14 @@ source .venv/bin/activate
 python monarch_invert.py [options]
 ```
 
-Run without arguments for more details.
+Run without arguments for usage help.
 
-### Interactive flow
+### Recommended flow
 
-1. The script lists transactions for your review
-2. Enter the numbers corresponding to transactions you want to invert: `0 2 5`, `0-5`, or `all`
-3. A confirmation prompt is shown to confirm the transactions to be modified
-4. Upon confirmation, transactions are inverted.
+1. Run the script once to log in and create tags: `python monarch_invert.py --save-credentials --create-tags`
+2. In Monarch, add the "Is Inverted" tag to inverted transactions.
+3. Run the script to fix them: `python monarch_invert.py --save-credentials --use-tags`
+3. A confirmation prompt is shown to confirm the transactions to be modified.
+5. Upon confirmation, transactions are inverted and "Is Inverted" tags are replaced by "Was Inverted" tags.
+
 
