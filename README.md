@@ -30,7 +30,6 @@ python monarch_invert.py [options]
 
 Run without arguments for usage help.
 
-<<<<<<< HEAD
 ### Recommended flow
 
 1. Run the script once to log in and create tags: `python monarch_invert.py --save-credentials --create-tags`
@@ -39,8 +38,6 @@ Run without arguments for usage help.
 3. A confirmation prompt is shown to confirm the transactions to be modified.
 5. Upon confirmation, transactions are inverted and "Is Inverted" tags are replaced by "Was Inverted" tags.
 
-
-=======
 By default, the script prompts to create missing `Is Inverted` / `Was Inverted` tags once. If you decline, it will not prompt again on later runs (you can still create them later with `--create-tags`). Use `--no-create-tags` to skip prompting and creation for the current run.
 
 ### Interactive flow
@@ -49,4 +46,3 @@ By default, the script prompts to create missing `Is Inverted` / `Was Inverted` 
 2. Enter the numbers corresponding to transactions you want to invert: `0 2 5`, `0-5`, or `all`
 3. A confirmation prompt is shown to confirm the transactions to be modified
 4. Upon confirmation, transactions are inverted.
->>>>>>> b21c6e2 (Add configurable tag creation prompt behavior)

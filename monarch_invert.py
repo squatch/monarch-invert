@@ -29,7 +29,8 @@ COOKIE_FILE = "cookies.txt"
 TAG_IS_INVERTED = "Is Inverted"
 TAG_WAS_INVERTED = "Was Inverted"
 TAG_COLOR_DEFAULT = "#808080"
-PREFS_FILE = ".monarch_invert_prefs.json"
+MM_DIR = ".mm"
+PREFS_FILE = os.path.join(MM_DIR, "monarch_invert_prefs.json")
 
 
 def valid_date(s: str) -> date:
@@ -215,6 +216,7 @@ def _load_prefs() -> dict:
 
 
 def _save_prefs(prefs: dict) -> None:
+    os.makedirs(os.path.dirname(PREFS_FILE), exist_ok=True)
     with open(PREFS_FILE, "w", encoding="utf-8") as f:
         json.dump(prefs, f, indent=2, sort_keys=True)
         f.write("\n")
