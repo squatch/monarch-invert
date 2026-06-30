@@ -14,6 +14,7 @@ Usage:
 
 import asyncio
 import argparse
+import json
 import os
 import sys
 from datetime import date, timedelta
@@ -28,6 +29,8 @@ COOKIE_FILE = "cookies.txt"
 TAG_IS_INVERTED = "Is Inverted"
 TAG_WAS_INVERTED = "Was Inverted"
 TAG_COLOR_DEFAULT = "#808080"
+MM_DIR = ".mm"
+PREFS_FILE = os.path.join(MM_DIR, "monarch_invert_prefs.json")
 
 
 def valid_date(s: str) -> date:
@@ -85,6 +88,20 @@ def parse_args():
         action="store_true",
         help="Save the session to disk after login so subsequent runs skip the login prompt. "
              "Do not use on shared computers. You must prevent others from accessing .mm/mm_session.pickle. You should remove it when it is no longer needed.",
+    )
+    tag_create_group = parser.add_mutually_exclusive_group()
+    tag_create_group.add_argument(
+        "--create-tags",
+        action="store_true",
+        help=(
+            f'Create missing "{TAG_IS_INVERTED}" and "{TAG_WAS_INVERTED}" tags automatically '
+            "without prompting."
+        ),
+    )
+    tag_create_group.add_argument(
+        "--no-create-tags",
+        action="store_true",
+        help="Do not prompt for or create missing tags.",
     )
     if len(sys.argv) == 1:
         parser.print_help()
@@ -188,37 +205,116 @@ async def get_accounts(mm: MonarchMoney, name_substring: str) -> list[dict]:
     return accounts
 
 
-async def get_or_create_tag(mm: MonarchMoney, name: str, tags_cache: dict[str, dict]) -> dict:
-    """Return the tag dict for *name*, creating it (gray) if it doesn't exist.
+def _load_prefs() -> dict:
+    if not os.path.exists(PREFS_FILE):
+        return {}
+    try:
+        with open(PREFS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_prefs(prefs: dict) -> None:
+    os.makedirs(os.path.dirname(PREFS_FILE), exist_ok=True)
+    with open(PREFS_FILE, "w", encoding="utf-8") as f:
+        json.dump(prefs, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.chmod(PREFS_FILE, 0o600)
+
+
+async def _refresh_tags_cache(mm: MonarchMoney, tags_cache: dict[str, dict]) -> None:
+    data = await mm.get_transaction_tags()
+    for t in data.get("householdTransactionTags", []):
+        tags_cache[t["name"].lower()] = t
+
+
+async def _get_tag(mm: MonarchMoney, name: str, tags_cache: dict[str, dict]) -> dict | None:
+    """Return tag dict for *name*, or None if it doesn't exist.
 
     *tags_cache* is a mapping of lowercase tag name -> tag dict and is updated
     in-place so repeat calls don't hit the network.
     """
     key = name.lower()
     if key not in tags_cache:
-        data = await mm.get_transaction_tags()
-        for t in data.get("householdTransactionTags", []):
-            tags_cache[t["name"].lower()] = t
-    if key not in tags_cache:
-        result = await mm.create_transaction_tag(name=name, color=TAG_COLOR_DEFAULT)
-        new_tag = result.get("createTransactionTag", {}).get("tag", {})
+        await _refresh_tags_cache(mm, tags_cache)
+    return tags_cache.get(key)
+
+
+async def _create_tag(mm: MonarchMoney, name: str, tags_cache: dict[str, dict]) -> dict | None:
+    result = await mm.create_transaction_tag(name=name, color=TAG_COLOR_DEFAULT)
+    new_tag = result.get("createTransactionTag", {}).get("tag", {})
+    if new_tag and new_tag.get("name"):
         tags_cache[new_tag["name"].lower()] = new_tag
-    return tags_cache[key]
+        return new_tag
+    await _refresh_tags_cache(mm, tags_cache)
+    return tags_cache.get(name.lower())
+
+
+async def resolve_tag_ids(
+    mm: MonarchMoney,
+    tags_cache: dict[str, dict],
+    create_tags: bool,
+    no_create_tags: bool,
+) -> tuple[str | None, str | None]:
+    is_inverted_tag = await _get_tag(mm, TAG_IS_INVERTED, tags_cache)
+    was_inverted_tag = await _get_tag(mm, TAG_WAS_INVERTED, tags_cache)
+
+    missing_names = []
+    if not is_inverted_tag:
+        missing_names.append(TAG_IS_INVERTED)
+    if not was_inverted_tag:
+        missing_names.append(TAG_WAS_INVERTED)
+
+    if not missing_names:
+        return is_inverted_tag["id"], was_inverted_tag["id"]
+
+    if no_create_tags:
+        print(f'Skipping creation of missing tags: {", ".join(missing_names)}.')
+        return (
+            is_inverted_tag["id"] if is_inverted_tag else None,
+            was_inverted_tag["id"] if was_inverted_tag else None,
+        )
+
+    should_create = create_tags
+    if not should_create:
+        prefs = _load_prefs()
+        if prefs.get("declined_tag_creation_prompt"):
+            print("Skipping tag creation prompt (previously declined).")
+        else:
+            print(f'Missing tag(s): {", ".join(missing_names)}.')
+            answer = input("Create missing tag(s) now? [Y/n] ").strip().lower()
+            if answer == "n":
+                prefs["declined_tag_creation_prompt"] = True
+                _save_prefs(prefs)
+                print("Okay, not creating tags. Use --create-tags later to create them.")
+            else:
+                should_create = True
+
+    if should_create:
+        if not is_inverted_tag:
+            is_inverted_tag = await _create_tag(mm, TAG_IS_INVERTED, tags_cache)
+        if not was_inverted_tag:
+            was_inverted_tag = await _create_tag(mm, TAG_WAS_INVERTED, tags_cache)
+
+    return (
+        is_inverted_tag["id"] if is_inverted_tag else None,
+        was_inverted_tag["id"] if was_inverted_tag else None,
+    )
 
 
 async def update_tags_after_invert(
     mm: MonarchMoney,
     transaction: dict,
-    tags_cache: dict[str, dict],
+    is_inverted_tag_id: str | None,
+    was_inverted_tag_id: str | None,
 ) -> None:
     """Remove the 'Is Inverted' tag and add the 'Was Inverted' tag."""
+    if not is_inverted_tag_id or not was_inverted_tag_id:
+        return
     current_tag_ids: set[str] = {tg["id"] for tg in (transaction.get("tags") or [])}
 
-    # Resolve both tags (creating Was Inverted if needed)
-    is_inverted_tag = await get_or_create_tag(mm, TAG_IS_INVERTED, tags_cache)
-    was_inverted_tag = await get_or_create_tag(mm, TAG_WAS_INVERTED, tags_cache)
-
-    new_tag_ids = (current_tag_ids - {is_inverted_tag["id"]}) | {was_inverted_tag["id"]}
+    new_tag_ids = (current_tag_ids - {is_inverted_tag_id}) | {was_inverted_tag_id}
     if new_tag_ids != current_tag_ids:
         await mm.set_transaction_tags(
             transaction_id=transaction["id"],
@@ -278,21 +374,22 @@ async def main() -> None:
     await do_login(mm, args.save_credentials)
 
     tags_cache: dict[str, dict] = {}
+    is_inverted_tag_id, was_inverted_tag_id = await resolve_tag_ids(
+        mm,
+        tags_cache,
+        create_tags=args.create_tags,
+        no_create_tags=args.no_create_tags,
+    )
 
     if args.use_tags:
         # Resolve the "Is Inverted" tag; it must already exist to filter by it
         print(f'Looking for transactions tagged "{TAG_IS_INVERTED}"...')
-        data = await mm.get_transaction_tags()
-        for t in data.get("householdTransactionTags", []):
-            tags_cache[t["name"].lower()] = t
-
-        is_inverted_tag = tags_cache.get(TAG_IS_INVERTED.lower())
-        if not is_inverted_tag:
+        if not is_inverted_tag_id:
             print(f'No "{TAG_IS_INVERTED}" tag found in your account. Nothing to do.')
             sys.exit(0)
 
         txn_data = await mm.get_transactions(
-            tag_ids=[is_inverted_tag["id"]],
+            tag_ids=[is_inverted_tag_id],
             limit=500,
         )
         candidates = txn_data.get("allTransactions", {}).get("results", [])
@@ -328,7 +425,7 @@ async def main() -> None:
             merchant = (t.get("merchant") or {}).get("name") or t.get("plaidName") or "(unknown)"
             try:
                 await mm.update_transaction(transaction_id=t["id"], amount=new_amount)
-                await update_tags_after_invert(mm, t, tags_cache)
+                await update_tags_after_invert(mm, t, is_inverted_tag_id, was_inverted_tag_id)
                 print(f"  ✓ Fixed: {t['date']}  {merchant}  ({format_amount(t['amount'])} -> {format_amount(new_amount)})")
                 ok += 1
             except Exception as e:
@@ -425,7 +522,7 @@ async def main() -> None:
         merchant = (t.get("merchant") or {}).get("name") or t.get("plaidName") or "(unknown)"
         try:
             await mm.update_transaction(transaction_id=t["id"], amount=new_amount)
-            await update_tags_after_invert(mm, t, tags_cache)
+            await update_tags_after_invert(mm, t, is_inverted_tag_id, was_inverted_tag_id)
             print(f"  ✓ Fixed: {t['date']}  {merchant}  ({format_amount(t['amount'])} -> {format_amount(new_amount)})")
             ok += 1
         except Exception as e:

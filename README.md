@@ -38,4 +38,3 @@ Run without arguments for usage help.
 3. A confirmation prompt is shown to confirm the transactions to be modified.
 5. Upon confirmation, transactions are inverted and "Is Inverted" tags are replaced by "Was Inverted" tags.
 
-
